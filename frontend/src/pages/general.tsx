@@ -15,9 +15,11 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { SettingsRow, SettingsSection } from "@/components/settings-section";
 import { DebugSettings } from "@/components/debug-settings";
+import { DateConversionSettings } from "@/components/date-conversion-settings";
 import { RomajiEditor, normalizeRomajiRows, type RomajiRow } from "@/components/romaji-editor";
 import { Zenzai } from "@/pages/zenzai";
 import { getConfigAfterPendingUpdates, saveConfigWithToast } from "@/lib/config";
+import { DEFAULT_DATE_FORMATS, normalizeDateFormats } from "@/lib/date-formats.js";
 
 type WidthMode = "half" | "full";
 type LearningMode = "enabled" | "read_only" | "disabled";
@@ -39,6 +41,8 @@ type GeneralConfigState = {
     experimental_mixed_input: boolean;
     english_dictionary: boolean;
     katakana_english_dictionary: boolean;
+    date_conversion: boolean;
+    date_formats: string[];
 };
 type CharacterWidthGroupsState = Record<
     "alphabet" | "number" | "bracket" | "comma_period" | "middle_dot_corner_bracket" |
@@ -63,6 +67,8 @@ const DEFAULT_GENERAL_CONFIG: GeneralConfigState = {
     experimental_mixed_input: false,
     english_dictionary: true,
     katakana_english_dictionary: true,
+    date_conversion: true,
+    date_formats: DEFAULT_DATE_FORMATS,
 };
 const LIVE_CONVERSION_READING_VERTICAL_ADJUSTMENT_MIN = -12;
 const LIVE_CONVERSION_READING_VERTICAL_ADJUSTMENT_MAX = 12;
@@ -134,6 +140,7 @@ const WIDTH_ROWS: { key: keyof CharacterWidthGroupsState; label: string }[] = [
 const normalizeGeneralConfig = (value?: Record<string, unknown>): GeneralConfigState => {
     const next = { ...DEFAULT_GENERAL_CONFIG };
     for (const key of Object.keys(next) as (keyof GeneralConfigState)[]) {
+        if (key === "date_formats") continue;
         if (typeof value?.[key] === typeof next[key]) {
             Object.assign(next, { [key]: value![key] });
         }
@@ -144,6 +151,7 @@ const normalizeGeneralConfig = (value?: Record<string, unknown>): GeneralConfigS
     }
     next.live_conversion_reading_vertical_adjustment =
         clampLiveConversionReadingVerticalAdjustment(value?.live_conversion_reading_vertical_adjustment);
+    next.date_formats = normalizeDateFormats(value?.date_formats);
     return next;
 };
 const normalizeLearningMode = (value: unknown): LearningMode =>
@@ -409,6 +417,9 @@ export const General = ({ page }: { page: "input" | "conversion" | "keys" | "adv
                         </SettingsRow>
                     </div>}
                 </SettingsSection>
+                <DateConversionSettings enabled={generalValue.date_conversion} formats={generalValue.date_formats}
+                    onEnabledChange={(enabled) => updateGeneralConfig("date_conversion", enabled)}
+                    onFormatsSaved={(formats) => setGeneralValue((current) => ({ ...current, date_formats: formats }))} />
                 <SettingsSection title="変換学習">
                     <SettingsRow label="学習と履歴の使用" htmlFor="learning-mode">
                         <Select value={learningMode} onValueChange={(value: LearningMode) => void updateLearningMode(value)}>

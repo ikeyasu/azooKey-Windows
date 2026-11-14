@@ -263,6 +263,7 @@ fn update_config_impl(
         }
     };
     let new_config = merge_config_update(current_config.clone(), base_config, new_config)?;
+    shared::validate_date_formats(&new_config.general.date_formats)?;
     let changed = current_config != new_config;
     if changed {
         new_config.write().map_err(|error| error.to_string())?;
@@ -604,6 +605,26 @@ mod tests {
         assert!(result.server_applied);
         assert!(!result.changed);
         assert!(result.message.is_none());
+    }
+
+    #[test]
+    fn update_config_rejects_invalid_date_formats_before_writing() {
+        let temp = tempfile::tempdir().unwrap();
+        let _appdata = AppDataGuard::set(temp.path());
+        let state = test_state();
+        let original = AppConfig::default();
+        original.write().unwrap();
+        let path = temp.path().join("Azookey").join("settings.json");
+        let original_contents = fs::read(&path).unwrap();
+        let mut invalid = original.clone();
+        invalid.general.date_formats = vec!["yyyy/MM/dd HH:mm".to_owned()];
+
+        let error = update_config_impl(&state, original.clone(), invalid).unwrap_err();
+
+        assert!(error.contains("トークン"));
+        assert_eq!(fs::read(&path).unwrap(), original_contents);
+        assert_eq!(*state.settings.lock().unwrap(), original);
+        assert!(!*state.server_config_dirty.lock().unwrap());
     }
 
     #[test]

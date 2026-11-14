@@ -15,6 +15,11 @@ pub mod proto {
         tonic::include_file_descriptor_set!("azookey_service_descriptor");
 }
 
+pub mod date_formats;
+pub use date_formats::{
+    default_date_formats, validate_date_formats, MAX_DATE_FORMATS, MAX_DATE_FORMAT_CHARS,
+};
+
 // Desktop LOCAL pipe names are global in NPFS, so every leaf includes the
 // Terminal Services session ID. AppContainer clients resolve LOCAL inside their
 // package namespace; the server publishes the same suffixed leaf there too.
@@ -653,6 +658,14 @@ pub struct GeneralConfig {
     pub english_dictionary: bool,
     #[serde(default = "default_bundled_dictionary_enabled")]
     pub katakana_english_dictionary: bool,
+    #[serde(default = "default_date_conversion_enabled")]
+    pub date_conversion: bool,
+    #[serde(default = "default_date_formats")]
+    pub date_formats: Vec<String>,
+}
+
+fn default_date_conversion_enabled() -> bool {
+    true
 }
 
 fn default_bundled_dictionary_enabled() -> bool {
@@ -679,6 +692,8 @@ impl Default for GeneralConfig {
             experimental_mixed_input: false,
             english_dictionary: true,
             katakana_english_dictionary: true,
+            date_conversion: true,
+            date_formats: default_date_formats(),
         }
     }
 }
@@ -752,6 +767,21 @@ pub fn zenzai_cpu_backend_supported() -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn date_conversion_defaults_on_and_custom_formats_round_trip_in_order() {
+        let defaults = super::GeneralConfig::default();
+        let mut missing: super::GeneralConfig = serde_json::from_str("{}").unwrap();
+        assert!(defaults.date_conversion);
+        assert!(missing.date_conversion);
+        assert_eq!(missing.date_formats, super::default_date_formats());
+        assert_eq!(missing.date_formats, defaults.date_formats);
+        missing.date_conversion = false;
+        missing.date_formats = vec!["yy年M月d日".to_owned(), "yyyy-MM-dd".to_owned()];
+        let saved = serde_json::to_string(&missing).unwrap();
+        let loaded: super::GeneralConfig = serde_json::from_str(&saved).unwrap();
+        assert_eq!(loaded, missing);
+    }
+
     #[test]
     fn jev_conversion_is_opt_in_and_round_trips() {
         let mut general: super::GeneralConfig = serde_json::from_str("{}").unwrap();

@@ -352,3 +352,91 @@ test("settings layout, editing safety, navigation and update badge", async () =>
         await server.close();
     }
 });
+
+test("date conversion settings validate, preview, save in order and retain unsaved drafts", async () => {
+    const server = await createServer({ root, configFile: path.join(root, "vite.config.ts"), server: { host: "127.0.0.1", port: 0 }, logLevel: "error" });
+    await server.listen();
+    const base = `http://127.0.0.1:${server.httpServer.address().port}`;
+    let browser;
+    try {
+        browser = await chromium.launch({ headless: true, executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE });
+        const context = await browser.newContext({ viewport: { width: 800, height: 600 } });
+        await context.addInitScript(installMock);
+        const page = await context.newPage();
+        const runtimeErrors = [];
+        page.on("pageerror", (error) => runtimeErrors.push(error.message));
+        await page.goto(`${base}/conversion`);
+        const enabled = page.getByRole("switch", { name: "今日の日付を候補に出す", exact: true });
+        const formats = page.getByRole("textbox", { name: "日付形式", exact: true });
+        const save = page.getByRole("button", { name: "日付形式を保存", exact: true });
+        await formats.waitFor();
+        assert.ok(await enabled.isChecked(), "older settings default to enabled");
+        assert.equal(await formats.inputValue(), "yyyyMMdd\nyyyy/MM/dd\nyyyy年MM月dd日");
+        const expected = await page.evaluate(() => {
+            const date = new Date();
+            const y = String(date.getFullYear());
+            const m = String(date.getMonth() + 1).padStart(2, "0");
+            const d = String(date.getDate()).padStart(2, "0");
+            return [`${y}${m}${d}`, `${y}/${m}/${d}`, `${y}年${m}月${d}日`];
+        });
+        assert.deepEqual(await page.getByRole("list", { name: "日付候補のプレビュー" }).locator("li").allTextContents(), expected);
+        assert.ok(await save.isDisabled());
+
+        const custom = "yy年M月d日\nyyyy-MM-dd";
+        await formats.fill(custom);
+        assert.equal(await page.evaluate(() => window.settingsTest.writes), 0, "editing must require an explicit save");
+        await enabled.click();
+        await page.waitForFunction(() => window.settingsTest.config.general.date_conversion === false);
+        await save.waitFor({ state: "visible" });
+        assert.equal(await formats.inputValue(), custom, "an immediate toggle must retain an unsaved format draft");
+        assert.equal(await page.evaluate(() => window.settingsTest.config.general.date_formats), undefined);
+
+        await formats.fill("yyyy/MM/dd HH:mm");
+        await page.getByRole("alert").filter({ hasText: "使えるトークン" }).waitFor();
+        await save.click();
+        assert.equal(await page.evaluate(() => window.settingsTest.writes), 1, "invalid formats cannot reach update_config");
+        assert.ok(await formats.evaluate((element) => element === document.activeElement));
+        await formats.fill(custom);
+        await page.getByRole("link", { name: "入力と文字", exact: true }).click();
+        await page.getByRole("alertdialog").waitFor();
+        await page.getByRole("button", { name: "編集を続ける", exact: true }).click();
+        assert.equal(await formats.inputValue(), custom, "canceling navigation retains the draft");
+
+        await page.evaluate(() => { window.settingsTest.failSave = true; });
+        await save.click();
+        await page.getByText("日付形式の保存に失敗しました", { exact: true }).waitFor();
+        assert.equal(await formats.inputValue(), custom);
+        assert.ok(await save.isEnabled(), "a failed save allows retry");
+        await page.evaluate(() => { window.settingsTest.failSave = false; window.settingsTest.holdSave = true; });
+        await save.click();
+        await page.getByRole("button", { name: "保存中…", exact: true }).waitFor();
+        assert.ok(await formats.isDisabled());
+        assert.ok(await enabled.isDisabled());
+        await page.evaluate(() => { window.settingsTest.holdSave = false; });
+        await page.getByText("日付形式を保存しました", { exact: true }).waitFor();
+        assert.deepEqual(await page.evaluate(() => window.settingsTest.config.general.date_formats), custom.split("\n"));
+        assert.equal(await page.evaluate(() => window.settingsTest.config.general.date_conversion), false);
+        assert.ok(await save.isDisabled());
+
+        await page.getByRole("link", { name: "入力と文字", exact: true }).click();
+        await page.getByRole("link", { name: "変換と候補", exact: true }).click();
+        await formats.waitFor();
+        assert.equal(await formats.inputValue(), custom);
+        assert.ok(!(await enabled.isChecked()));
+        await formats.fill("yyyyMMdd");
+        await page.evaluate(async () => {
+            const state = window.settingsTest;
+            const listeners = Object.values(state.listeners).filter((listener) => listener.event === "tauri://close-requested");
+            if (listeners.length !== 1) throw new Error("one native close guard must remain after navigation");
+            await Promise.all(listeners.map((listener) => state.callbacks[listener.handler]({ event: listener.event, id: listener.handler, payload: {} })));
+        });
+        await page.getByRole("alertdialog").waitFor();
+        assert.equal(await page.evaluate(() => window.settingsTest.destroys), 0);
+        await page.getByRole("button", { name: "編集を続ける", exact: true }).click();
+        assert.equal(await formats.inputValue(), "yyyyMMdd");
+        assert.deepEqual(runtimeErrors, []);
+    } finally {
+        await browser?.close();
+        await server.close();
+    }
+});

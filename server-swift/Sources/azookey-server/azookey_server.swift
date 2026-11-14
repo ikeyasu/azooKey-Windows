@@ -35,6 +35,7 @@ private let fallbackDictionaryURL =
 @MainActor var learningSelectionOverrides: [String: String] = [:]
 @MainActor var reconversionDictionary = ReconversionDictionary()
 @MainActor var emojiTextReplacerCache = EmojiTextReplacerCache()
+@MainActor var currentDateConversionSettings = DateConversionSettings()
 
 @MainActor var execURL = URL(filePath: "")
 @MainActor var config: [String : Any] = [
@@ -1191,9 +1192,15 @@ struct GeneralSettings: Decodable {
     let experimental_mixed_input: Bool?
     let english_dictionary: Bool?
     let katakana_english_dictionary: Bool?
+    let date_conversion: Bool?
+    let date_formats: [String]?
 
     var bundledDictionaries: BundledDictionaryMode {
         .init(english: english_dictionary ?? true, katakana: katakana_english_dictionary ?? true)
+    }
+
+    var dateConversion: DateConversionSettings {
+        .init(enabled: date_conversion ?? true, formats: date_formats)
     }
 }
 
@@ -2503,7 +2510,10 @@ func cursorPrefixBoundaryFirstClauseResults(
 }
 
 @MainActor private func applyLoadedConfig() -> Bool {
-    let loadedSettingsPath = settingsPath()
+    applyLoadedConfig(at: settingsPath())
+}
+
+@MainActor func applyLoadedConfig(at loadedSettingsPath: URL) -> Bool {
     var loadedSettings: AppSettings?
     var settingsLoadError: Error?
     do {
@@ -2548,6 +2558,7 @@ func cursorPrefixBoundaryFirstClauseResults(
     config["experimentalMixedInput"] = false
     config["englishDictionary"] = true
     config["katakanaEnglishDictionary"] = true
+    currentDateConversionSettings = loadedSettings?.general?.dateConversion ?? .init()
     setRoman2KanaInputStyle()
     currentLearningType = .inputAndOutput
     currentLearningMemoryDirectoryURL = learningMemoryDirectoryURL(settingsPath: loadedSettingsPath)
@@ -3274,17 +3285,41 @@ public func free_candidate_list(
 
 @_silgen_name("GetComposedText")
 @MainActor public func get_composed_text(lengthPtr: UnsafeMutablePointer<CInt>) -> UnsafeMutablePointer<UnsafeMutablePointer<FFICandidate>?> {
-    get_composed_text_impl(lengthPtr: lengthPtr, allowZenzai: true)
+    get_composed_text_impl(lengthPtr: lengthPtr, allowZenzai: true, allowDateConversion: true)
 }
 
 @_silgen_name("GetComposedTextForReconversion")
 @MainActor public func get_composed_text_for_reconversion(lengthPtr: UnsafeMutablePointer<CInt>) -> UnsafeMutablePointer<UnsafeMutablePointer<FFICandidate>?> {
-    get_composed_text_impl(lengthPtr: lengthPtr, allowZenzai: false)
+    get_composed_text_impl(lengthPtr: lengthPtr, allowZenzai: false, allowDateConversion: false)
+}
+
+@MainActor private func insertDateCandidates(
+    into result: inout [FFICandidate],
+    reading: String,
+    correspondingCount: Int,
+    suffix: String
+) {
+    let dates = currentDateConversionSettings.candidates(for: reading)
+    guard !dates.isEmpty else { return }
+    // Preserve the ordinary first candidate and expose dates on the first page.
+    // Synthetic candidates deliberately have no learning identity.
+    let insertionIndex = min(1, result.count)
+    let candidates = dates.enumerated().map { index, date in
+        FFICandidate(
+            text: _strdup(date),
+            subtext: _strdup(suffix),
+            hiragana: result.isEmpty && index == 0 ? _strdup(reading + suffix) : nil,
+            correspondingCount: Int32(correspondingCount),
+            candidateId: 0
+        )
+    }
+    result.insert(contentsOf: candidates, at: insertionIndex)
 }
 
 @MainActor private func get_composed_text_impl(
     lengthPtr: UnsafeMutablePointer<CInt>,
-    allowZenzai: Bool
+    allowZenzai: Bool,
+    allowDateConversion: Bool
 ) -> UnsafeMutablePointer<UnsafeMutablePointer<FFICandidate>?> {
     let functionStart = performanceNow()
     let performanceEnabled = serverLogCallbacks.isPerformanceLogEnabled()
@@ -3428,6 +3463,15 @@ public func free_candidate_list(
                 correspondingCount: Int32(correspondingCount),
                 candidateId: learningCandidateId(at: i, batchFirstId: learningCandidateBatchFirstId)
             )
+        )
+    }
+
+    if allowDateConversion {
+        insertDateCandidates(
+            into: &result,
+            reading: originalHiragana,
+            correspondingCount: composingText.input.count,
+            suffix: ""
         )
     }
 
@@ -3765,6 +3809,15 @@ public func free_candidate_list(
                 correspondingCount: Int32(correspondingCount),
                 candidateId: learningCandidateId(at: i, batchFirstId: learningCandidateBatchFirstId)
             )
+        )
+    }
+
+    if firstClauseCorrespondingCount == prefixComposingText.input.count {
+        insertDateCandidates(
+            into: &result,
+            reading: prefixHiragana,
+            correspondingCount: prefixComposingText.input.count,
+            suffix: suffixAfterCursor
         )
     }
 
